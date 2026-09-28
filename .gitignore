@@ -1,0 +1,7 @@
+# Godot
+example/.godot/
+*.import
+# Build output
+build/
+native/build/
+native/.sconsign*.dblite

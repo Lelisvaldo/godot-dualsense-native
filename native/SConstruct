@@ -1,0 +1,68 @@
+#!/usr/bin/env python
+# godot-dualsense-native: GDExtension build.
+#
+# Uses godot-cpp's own build flags (tools/godotcpp.py) and a prebuilt godot-cpp static library, plus
+# hidapi (compiled from source) and a static libopus. The easiest way is the Docker toolchain:
+#   ./build.sh [linux|windows|all]
+# Paths can be overridden with the environment variables GODOT_CPP, HIDAPI and OPUS_ROOT.
+import os
+import sys
+
+GODOT_CPP = os.environ.get("GODOT_CPP", "/opt/godot-cpp")
+HIDAPI = os.environ.get("HIDAPI", "/opt/hidapi")
+OPUS_ROOT = os.environ.get("OPUS_ROOT", "/opt/opus")
+sys.path.append(GODOT_CPP)
+sys.path.insert(0, os.path.join(GODOT_CPP, "tools"))
+import godotcpp  # noqa: E402
+
+# godotcpp looks for its platform tools in "tools/" next to the calling SConstruct; point it at
+# the godot-cpp checkout instead.
+godotcpp.get_platform_tools_paths = lambda env: [os.path.join(GODOT_CPP, "tools")]
+
+env = Environment(tools=["default"], PLATFORM="")
+env.PrependENVPath("PATH", os.getenv("PATH"))
+opts = Variables([], ARGUMENTS)
+godotcpp.options(opts, env)
+opts.Update(env)
+env["target"] = "template_release"
+env["arch"] = "x86_64"
+env["custom_api_file"] = os.path.join(GODOT_CPP, "extension_api.json")
+if env["platform"] == "windows":
+    env["use_mingw"] = True
+godotcpp.generate(env)
+
+platform = env["platform"]
+if platform not in ("linux", "windows"):
+    Exit("unsupported platform: " + platform)
+
+env.Append(CPPPATH=[
+    os.path.join(GODOT_CPP, "include"),
+    os.path.join(GODOT_CPP, "gen", "include"),
+    os.path.join(GODOT_CPP, "gdextension"),
+    os.path.join(HIDAPI, "hidapi"),
+    "src",
+])
+env.Append(LIBPATH=[os.path.join(GODOT_CPP, "bin")])
+env.Prepend(LIBS=["godot-cpp" + env["suffix"]])
+opus = os.path.join(OPUS_ROOT, platform)
+env.Append(CPPPATH=[os.path.join(opus, "include", "opus")], LIBPATH=[os.path.join(opus, "lib")])
+
+build_dir = "#build/" + platform
+VariantDir(build_dir, "src", duplicate=0)
+sources = [build_dir + "/" + f for f in ("ds_protocol.cpp", "dualsense.cpp", "register_types.cpp", "usb_haptics.cpp")]
+
+if platform == "linux":
+    hid_source = os.path.join(HIDAPI, "linux", "hid.c")
+    env.Append(LIBS=["opus", "udev", "m"])
+    name = "libdualsense.linux.x86_64.so"
+else:
+    hid_source = os.path.join(HIDAPI, "windows", "hid.c")
+    # ole32 + ksuser: COM/WASAPI for USB haptics and speaker audio.
+    env.Append(LIBS=["opus", "setupapi", "cfgmgr32", "ole32", "ksuser"])
+    env.Append(LINKFLAGS=["-static", "-static-libgcc", "-static-libstdc++"])
+    name = "dualsense.windows.x86_64.dll"
+sources.append(env.SharedObject(target=build_dir + "/hidapi_" + platform, source=hid_source))
+
+library = env.SharedLibrary(target="#../example/addons/dualsense/bin/" + name, source=sources,
+                            SHLIBPREFIX="", SHLIBSUFFIX="")
+Default(library)
